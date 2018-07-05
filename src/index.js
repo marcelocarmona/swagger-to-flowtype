@@ -109,6 +109,20 @@ const propertiesList = (definition: Object) => {
   );
 };
 
+// Generate imports
+const importsList = (definition: Object) => {
+  if (!definition.properties) return [];
+  return Object.values(definition.properties).reduce((acc, value) => {
+    if (value && value.$ref) {
+      return [...acc, definitionTypeName(value.$ref)];
+    }
+    if (value && value.type === "array" && value.items && value.items.$ref) {
+      return [...acc, definitionTypeName(value.items.$ref)];
+    }
+    return acc;
+  }, []);
+};
+
 const withExact = (property: string): string => {
   const result = property.replace(/{[^|]/g, "{|").replace(/[^|]}/g, "|}");
   return result;
@@ -149,22 +163,68 @@ const generate = (swagger: Object): string => {
     throw new Error("There is no definition");
   }
 
-  const g = Object.keys(defs)
-    .reduce((acc: Array<Object>, definitionName: string) => {
+  let g = Object.keys(defs).reduce(
+    (acc: Array<Object>, definitionName: string) => {
       const arr = acc.concat({
         title: stripBrackets(definitionName),
         properties: propertiesList(defs[definitionName])
       });
       return arr;
-    }, [])
-    .map(definition => {
-      const s = `export type ${definition.title} = ${propertiesTemplate(
-        definition.properties
-      ).replace(/"/g, "")};`;
-      return s;
-    })
-    .join(" ");
+    },
+    []
+  );
+
+  g = g.map(definition => {
+    const s = `export type ${definition.title} = ${propertiesTemplate(
+      definition.properties
+    ).replace(/"/g, "")};`;
+    return s;
+  });
+
+  g.join(" ");
   return g;
+};
+
+// remove « and »
+// https://github.com/swagger-api/swagger-core/issues/498
+const removeGenericsBug = (value: string) =>
+  value.replace("«", "").replace("»", "");
+
+const generatorArray = (swagger: Object): Array<any> => {
+  let defs;
+  if (swagger.definitions) {
+    defs = swagger.definitions;
+  } else if (swagger.components) {
+    defs = swagger.components.schemas;
+  }
+  if (!defs) {
+    throw new Error("There is no definition");
+  }
+
+  return Object.keys(defs).reduce(
+    (acc: Array<Object>, definitionName: string) => {
+      const arr = acc.concat({
+        title: stripBrackets(removeGenericsBug(definitionName)),
+        properties: propertiesList(defs[definitionName]),
+        imports: importsList(defs[definitionName])
+      });
+      return arr;
+    },
+    []
+  );
+};
+
+const importTemplate = (typeName: string): string =>
+  `import type { ${typeName} } from './${typeName}';`;
+
+const importTemplates = (definition: Object): string =>
+  definition.imports.map(prop => importTemplate(prop)).join("\n");
+
+const generateTypeFile = (definition: Object): string => {
+  const s = `export type ${definition.title} = ${propertiesTemplate(
+    definition.properties
+  ).replace(/"/g, "")};`;
+  return importTemplates(definition) + s;
 };
 
 export const generator = (content: Object, file: string) => {
@@ -230,10 +290,37 @@ program
   .action(async file => {
     try {
       const content = await getContent(file);
-      const result = generator(content, file);
       const dist = distFile(program, file);
-      writeToFile(dist, result);
-      console.log(`Generated flow types to ${dist}`);
+      const results = generatorArray(content);
+      results.forEach(definition => {
+        const fileName = `${dist}/${definition.title}.js`;
+        let finalResult = generateTypeFile(definition);
+        const options = prettier.resolveConfig.sync(file) || {};
+        finalResult = `// @flow\n${finalResult}`;
+        finalResult = prettier.format(finalResult, options);
+        console.log(`Generated -> ${fileName}`);
+        writeToFile(fileName, finalResult);
+      });
+
+      // index file
+      const imports = results.map(definition => {
+        const s = `import type { ${definition.title} as _${
+          definition.title
+        } } from './${definition.title}';`;
+        return s;
+      });
+
+      const exports = results.map(definition => {
+        const s = `export type ${definition.title} = _${definition.title};`;
+        return s;
+      });
+      const indexFile = "// @flow\n".concat(
+        [...imports, " ", ...exports].join("\n").concat("\n")
+      );
+
+      writeToFile(`${dist}/index.js`, indexFile);
+
+      console.log("Generated flow types");
     } catch (e) {
       console.log(e);
     }
