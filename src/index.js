@@ -188,7 +188,11 @@ const generate = (swagger: Object): string => {
 // remove « and »
 // https://github.com/swagger-api/swagger-core/issues/498
 const removeGenericsBug = (value: string) =>
-  value.replace("«", "").replace("»", "");
+  value
+    .split("«")
+    .join("")
+    .split("»")
+    .join("");
 
 const generatorArray = (swagger: Object): Array<any> => {
   let defs;
@@ -218,7 +222,9 @@ const importTemplate = (typeName: string): string =>
   `import type { ${typeName} } from './${typeName}';`;
 
 const importTemplates = (definition: Object): string =>
-  definition.imports.map(prop => importTemplate(prop)).join("\n");
+  Array.from(new Set(definition.imports))
+    .map(prop => importTemplate(prop))
+    .join("\n");
 
 const generateTypeFile = (definition: Object): string => {
   const s = `export type ${definition.title} = ${propertiesTemplate(
@@ -293,9 +299,11 @@ program
       const dist = distFile(program, file);
       const results = generatorArray(content);
       results.forEach(definition => {
-        const fileName = `${dist}/${definition.title}.js`;
-        let finalResult = generateTypeFile(definition);
-        const options = prettier.resolveConfig.sync(file) || {};
+        const fileName = `${dist}/${removeGenericsBug(definition.title)}.js`;
+        let finalResult = removeGenericsBug(generateTypeFile(definition));
+        const options = prettier.resolveConfig.sync(file) || {
+          parser: "babylon"
+        };
         finalResult = `// @flow\n${finalResult}`;
         finalResult = prettier.format(finalResult, options);
         console.log(`Generated -> ${fileName}`);
